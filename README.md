@@ -178,7 +178,7 @@ This a new API, `getComposedRange()`, which can return a [`StaticRange`](https:/
 
 ## Part 2: Modify existing `Selection` APIs accordingly
 
-In addition to this new API for retrieving a composed (cross-tree) selection, some of the existing APIs within the `Selection` object will be updated to support selections that cross shadow boundaries. For example, the `setBaseAndExtent()` function will be updated to support `anchorNode` and `focusNode` living in different shadow trees. [This section](#changes-to-existing-selection-apis-and-compatibility) of the explainer goes into detail for each API.
+In addition to this new API for retrieving a composed (cross-tree) selection, some of the existing APIs within the `Selection` object will be updated to support selections that cross shadow boundaries. For example, the `setBaseAndExtent()` function will be updated to support `anchorNode` and `focusNode` living in different shadow trees. [This section](#changes-to-existing-selection-apis) of the explainer goes into detail for each API.
 
 But first, let’s see how the new `getComposedRange()` API can be used with the problem examples above:
 
@@ -293,7 +293,7 @@ selection.containsNode(F); // false (see example #3 above)
 </script>
 ```
 
-# Changes to existing Selection APIs, and Compatibility
+# Changes to existing Selection APIs
 
 This proposal adds only one *new* API, `getComposedRange()`. But it also modifies several *existing* Selection APIs to comprehend the composed tree. In general, the model for this proposal is to *change* the Selection API algorithms so that **internally**, the range is stored as a *composed* `StaticRange` with endpoints that can span **all** (including `closed`) shadow trees. And then the existing and new APIs discussed here ["re-scope"](#re-scoping) that actual full range to match platform expectations. For example, for backwards-compatibility, `Selection.getRangeAt()` should still return a *live* `Range` that is scoped to a single tree. And `Selection.getComposedRange()` should return a `StaticRange` that ["re-scopes"](#re-scoping) over (non-provided) `closed` shadow roots.
 
@@ -321,9 +321,9 @@ Here is a list of the existing Selection APIs that would be modified by this pro
     - `Selection.addRange()` - Since this method is fairly legacy and [only supports a single range](https://www.w3.org/TR/selection-api/#dom-selection-addrange) (by spec and in 2/3 engines), we should leave this API as-is, and **not** update it to support cross-tree ranges.
 
 
-# Compat risk
+# Web Compatibility Risk
 
-There is a (hopefully small) compatibility risk from making the proposed changes. Some of the changes proposed above **do** change the behavior of these APIs in the case where cross-tree nodes are **currently/already** being used. The behavior in these cases will likely change if this proposal is adopted. However, given that using cross-tree nodes in Selection APIs is not currently specified, and doesn't work in any browser at the moment, hopefully the prevalence of this in the wild is small. The primary Selection API use cases (e.g. calling `getRangeAt(0)`) should not be adversely affected by these changes.
+There is a (hopefully small) web compatibility risk from making the proposed changes. Some of the changes proposed above **do** change the behavior of these APIs in the case where cross-tree nodes are **currently/already** being used. The behavior in these cases will likely change if this proposal is adopted. However, given that using cross-tree nodes in Selection APIs is not currently specified, and doesn't work in any browser at the moment, hopefully the prevalence of this in the wild is small. The primary Selection API use cases (e.g. calling `getRangeAt(0)`) should not be adversely affected by these changes.
 
 
 # Appendix
