@@ -2,7 +2,9 @@
 
 Author: Mason Freed
 
-Last updated: September 28, 2021
+Last updated: October 8, 2021
+
+Issue: https://github.com/WICG/webcomponents/issues/79
 
 
 # Overview
