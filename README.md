@@ -171,12 +171,17 @@ This is a two-part proposal.
 
 ```webIDL
 partial interface Selection {
-  StaticRange getComposedRange(optional sequence<ShadowRoot> closedRoots = []);
+  StaticRange getComposedRange(optional GetComposedRangeOptions options = {});
+};
+
+dictionary GetComposedRangeOptions {
+  Node selectionRoot;
+  sequence<ShadowRoot> shadowRoots;
 };
 ```
 
 
-This a new API, `getComposedRange()`, which can return a [`StaticRange`](https://developer.mozilla.org/en-US/docs/Web/API/StaticRange) with endpoints in **different shadow trees**. Because that might expose `Node`s inside `closed` shadow trees, an optional `closedRoots` parameter enables the method to return `Node`s within the provided list of closed roots, if necessary. If a selection endpoint is within a non-provided `closed` shadow root, the returned selection will be ["re-scoped"](#re-scoping) as if the entire host element was selected.
+This a new API, `getComposedRange()`, which can return a [`StaticRange`](https://developer.mozilla.org/en-US/docs/Web/API/StaticRange) with endpoints in **different shadow trees**. Because that will necessarily expose `Node`s inside shadow trees, including potentially `closed` shadow trees, an optional `shadowRoots` parameter enables the method to return `Node`s within the provided list of shadow roots, if necessary. If a selection endpoint is within a non-provided shadow root, the returned selection will be ["re-scoped"](#re-scoping) as if the entire host element for that shadow root was selected.
 
 ## Part 2: Modify existing `Selection` APIs accordingly
 
@@ -197,7 +202,8 @@ With the new API, the exact selection range can be accessed:
 ```html
 <script>
 document.addEventListener("selectionchange", function() {
-  let composedRange = window.getSelection().getComposedRange();
+  let selection = window.getSelection();
+  let composedRange = selection.getComposedRange({shadowRoots: [root]});
   console.log(composedRange); // {"foo", 1, "baz", 1}
 });
 </script>
@@ -213,7 +219,7 @@ window.getSelection().setBaseAndExtent(foo, 1, baz, 1);
 
 ## #2. Editor component inside Shadow DOM.
 
-With a simple code change, the existing example "just works":
+With a simple code change, the existing Shadow DOM based example `<x-editor2>` element "just works":
 
 ```html
 <script>
@@ -221,7 +227,7 @@ customElements.define('x-editor2', class extends HTMLElement {
     ...same as before...
     shadow.querySelector('button').onclick = () => {
       let selection = window.getSelection();
-      let range = selection.getComposedRange(); // NEW API CALL HERE
+      let range = selection.getComposedRange({shadowRoots: [this]}); // NEW API CALL HERE
       range.startContainer.parentElement.style.color = 'red';
     };
   }
@@ -230,18 +236,21 @@ customElements.define('x-editor2', class extends HTMLElement {
 <x-editor2></x-editor2>
 ```
 
-Here, the `getComposedRange()` call returns the correct range, even when the selection crosses shadow boundaries.
+Here, the `getComposedRange()` call returns the correct range, even when the selection falls within its shadow root.
 
-If the `<x-editor2>` component were to be implemented using a `closed` shadow root, then the `closedRoots` parameter could be used to "unlock" access to the component's own shadow root:
+If, on the other hand, the editor wanted to be sure to only change nodes within "its" tree, each endpoint of the range would need to be checked for tree location:
 
 ```html
 <script>
 customElements.define('x-editor2', class extends HTMLElement {
-    ...same as before, but with a **closed** shadow root...
+    ...same as before...
     shadow.querySelector('button').onclick = () => {
-      let selection = window.getSelection();
-      let range = selection.getComposedRange(closedRoots: [shadow]); // NEW API CALL HERE
-      range.startContainer.parentElement.style.color = 'red';
+      ...same as before...
+      if (!shadow.contains(range.startContainer) || !shadow.contains(range.endContainer)) {
+        // Handle this case differently
+      } else {
+        range.startContainer.parentElement.style.color = 'red';
+      }
     };
   }
 });
@@ -249,7 +258,36 @@ customElements.define('x-editor2', class extends HTMLElement {
 <x-editor2></x-editor2>
 ```
 
-This example code will work both for the shadow-DOM-containing example `<x-editor2>` as well as the non-Shadow-DOM `<x-editor>` placed within a shadow root. I.e. it should be a complete replacement for the legacy `getRangeAt()` API.
+In the non-Shadow-DOM `<x-editor>` case, where an `<x-editor>` is placed within the shadow root of a `<parent-component>` element, a bit more work must be done:
+
+```html
+<script>
+  // Walk up the tree to find the first shadow root:
+  function getParentShadowRoot(el) {
+    if (el instanceof ShadowRoot || el === null)
+      return el;
+    return getParentShadowRoot(el.parentNode);
+  }
+  customElements.define('x-editor', class extends HTMLElement {
+    ...same as before...
+    connectedCallback() {
+      this.querySelector('button').onclick = () => {
+        let selection = window.getSelection();
+        let parentRoot = getParentShadowRoot(this); // Get the parent shadow root
+        // Pass it to the new API:
+        let range = selection.getComposedRange({shadowRoots: [parentRoot]});
+        range.startContainer.parentElement.style.color = 'red';
+      };
+    }
+  });
+  customElements.define('parent-component', class extends HTMLElement {
+    ...same as before...
+  });
+</script>
+<parent-component></parent-component>
+```
+
+In this case, since our `<x-editor>` component is located within a parent shadow root, we must provide "knowledge" of that shadow root. So we walk up the tree (using `getParentShadowRoot()`) to find the first containing shadow root, or null if there isn't one. This feels a bit odd, since `<x-editor>` doesn't use Shadow DOM, but it "proves" that `<x-editor>` knows how to deal with shadow selections.
 
 ## #3. Slotted content.
 
@@ -273,36 +311,72 @@ So the new `getComposedRange()` API works correctly here, too, so long as the ap
 
 # "Re-scoping"
 
-If the `closedRoots` parameter of `getComposedRange()` is not used, or if the provided value does not contain a given `closed` shadow root, then selections that cross such closed shadow roots will be **"re-scoped"** to enclose the corresponding shadow host element. That is to say, the returned `StaticRange` will be constructed as if the entire shadow host element is selected; neither the starting nor ending nodes of the `StaticRange` will reside within that shadow root.
+If the `shadowRoots` parameter of `getComposedRange()` is not used, or if the provided value does not contain a given shadow root, then selections that cross such shadow roots will be **"re-scoped"** to enclose the corresponding shadow host element. That is to say, the returned `StaticRange` will be constructed as if the entire shadow host element is selected; neither the starting nor ending nodes of the `StaticRange` will reside within that shadow root.
 
-To avoid this behavior for `closed` shadow roots, the `closedRoots` parameter can be used to allow `getComposedRange()` to return `Node`s within the provided roots. In the case of multiple nested `closed` `shadowRoot`s, only the lowest level `shadowRoot` is required in order to "reveal" higher level roots. For example, suppose we have this DOM tree:
+To avoid this behavior, the `shadowRoots` parameter can be used to allow `getComposedRange()` to return `Node`s within the provided roots. In the case of multiple nested `shadowRoot`s, only the lowest level `shadowRoot` is required in order to "reveal" higher level roots.
 
+To see the above in action, suppose we have this DOM tree:
+
+#### Example tree 1
 ![Example node tree](tree1.png)
 
 For this tree:
 
-```html
-<script>
+```javascript
+// Set the selection:
 let selection = window.getSelection();
-selection.setBaseAndExtent(C, 1, I, 1); // Select after-node-D through after-node-J
-// Passing no arguments, open shadow roots are included, but closed roots aren't:
-selection.getComposedRange(); // [C, 1, A, 2] - node E is closed, but B is open
-// Now, include closedRoots:
-selection.getComposedRange(closedRoots: [G]); // [C, 1, G, 1] - no knowledge of I 
-selection.getComposedRange(closedRoots: [I]); // [C, 1, I, 1] === original range, G not needed
-// Since G only contains H, which is not a <slot>, F does not get slotted/rendered:
-selection.containsNode(F); // false (see example #3 above)
-</script>
+selection.setBaseAndExtent(C, 1, J, 1); // Select from between-D-and-D through between-K-and-L
+
+// Passing no arguments, no shadow roots are included:
+selection.getComposedRange(); // [A, 0, A, 2] - nodes B and F are shadow hosts
+
+// Now, include shadowRoots:
+selection.getComposedRange({shadowRoots: [C]}); // [C, 1, A, 2] - no knowledge of F or I 
+selection.getComposedRange({shadowRoots: [C,H,J]}); // [C, 1, J, 1] === original range, all roots provided
+selection.getComposedRange({shadowRoots: [C,J]}); // [C, 1, J, 1] === original range, H not needed
+
+// Since H only contains I, which is not a <slot>, G does not get slotted/rendered:
+selection.containsNode(G); // false (see example #3 above)
+```
+
+Additionally, to simplify selection management for components that only wish to handle selections within a particular sub-tree, the `selectionRoot` parameter can be used:
+
+```javascript
+let rescopedSelection = selection.getComposedRange({selectionRoot: node});
+```
+
+In this case, the returned `StaticRange` will only contain endpoints that are inclusive descendants of `node`. If the selection extends "above" `node` in the tree on either side, those range endpoints will be re-scoped to appear as if the selection started and/or ended just within `node`. For example:
+
+#### Example tree 2
+
+![Example node tree #2](tree2.png)
+
+
+```javascript
+// Set the selection:
+let selection = window.getSelection();
+selection.setBaseAndExtent(A, 0, E, 1); // Select from before-B to after-F
+
+// Passing no arguments:
+selection.getComposedRange(); // [A, 0, A, 2] - re-scope around shadow host C
+
+// By providing a selectionRoot of E:
+//  1. the startContainer is re-scoped from A0 to E0 (first position within E).
+//  2. the containing shadow root is added to shadowRoots, so endContainer is *not* rescoped.
+selection.getComposedRange({selectionRoot: E}); // [E, 0, E, 1]
+
+// To use a "higher" selectionRoot, we'll have to also provide the shadow root:
+selection.getComposedRange({selectionRoot: A, shadowRoots: [D]}); // [A, 0, E, 1] === original 
 ```
 
 # Changes to existing Selection APIs
 
-This proposal adds only one *new* API, `getComposedRange()`. But it also modifies several *existing* Selection APIs to comprehend the composed tree. In general, the model for this proposal is to *change* the Selection API algorithms so that **internally**, the range is stored as a *composed* `StaticRange` with endpoints that can span **all** (including `closed`) shadow trees. And then the existing and new APIs discussed here ["re-scope"](#re-scoping) that actual full range to match platform expectations. For example, for backwards-compatibility, `Selection.getRangeAt()` should still return a *live* `Range` that is scoped to a single tree. And `Selection.getComposedRange()` should return a `StaticRange` that ["re-scopes"](#re-scoping) over (non-provided) `closed` shadow roots.
+This proposal adds only one *new* API, `getComposedRange()`. But it also modifies several *existing* Selection APIs to comprehend the composed tree. In general, the model for this proposal is to *change* the Selection API algorithms so that **internally**, the range is stored as an internal `Range`-type structure with endpoints that can span **all** (including `closed`) shadow trees. We will call this the **true range**. And then the existing and new APIs discussed here ["re-scope"](#re-scoping) that true range to match platform expectations. For example, for backwards-compatibility, `Selection.getRangeAt()` should still return a *live* `Range` that is scoped to a single tree. And `Selection.getComposedRange()` should return a `StaticRange` that ["re-scopes"](#re-scoping) over (non-provided) shadow roots.
 
 Here is a list of the existing Selection APIs that would be modified by this proposal:
 
 - Modify behavior to maintain backwards-compatibility:
-    - `Selection.getRangeAt()` - This function will be changed to return a single-tree `Range` object, by [re-scoping](#re-scoping) over any nodes in the range that are in different shadow trees. In other words, this will return a `Range` that is equivalent to the `StaticRange` that would be returned by a call to `getComposedRange()`, if all contained Shadow Roots were replaced by `closed` Shadow Roots, and no `closedRoots` parameter were provided.
+    - `Selection.getRangeAt()` - This function will be changed to return a single-tree `Range` object, by [re-scoping](#re-scoping) over any nodes in the range that are in different shadow trees. In other words, this will return a live `Range` that is equivalent to the `StaticRange` that would be returned by a call to `getComposedRange()` with no arguments provided.
     - `Selection.anchorNode/anchorOffset/focusNode/focusOffset` - because these currently always return `Node`s in the same shadow tree, they need to maintain that behavior. They should be re-defined to return the endpoints/offsets of the range returned by `Selection.getRangeAt(0)`.
 
 - Update behavior to "just work" for cross-tree selections:
@@ -311,6 +385,7 @@ Here is a list of the existing Selection APIs that would be modified by this pro
     - `Selection.collapseToEnd()/collapseToStart()` - These will be updated to work as expected for selections that include cross-tree endpoints.
     - `deleteFromDocument()` - This should work as-expected, even if range endpoints are in different trees.
     - `extend()` - This should work as-expected, even if the new `focusNode` is in a different shadow tree.
+    - User selection via mouse, keyboard, etc. - The selection generated by this activity should be allowed to start and end anywhere in the document, including inside any `open` or `closed` shadow trees. The behavior should be equivalent to calls to `setBaseAndExtent()`, modulo [canonicalization behavior](#canonicalization).
 
 - Perhaps more nuanced:
     - `Selection.containsNode()` - This must be modified to work correctly for slotted content, in addition to general cross-tree selections. For example, if an un-slotted child of a `Node` in the range is queried, this method should return `false`, even though that child is reachable in a tree-of-trees walk from `anchorNode` to `focusNode`. Since it is not slotted, the user does not see it, so it should not be considered to be part of the selection. Since the previous behavior was unaware of shadow trees entirely, this does not seem like much of a compat risk.
@@ -322,6 +397,67 @@ Here is a list of the existing Selection APIs that would be modified by this pro
     - `Selection.toString()` - No change needed.
     - `Selection.addRange()` - Since this method is fairly legacy and [only supports a single range](https://www.w3.org/TR/selection-api/#dom-selection-addrange) (by spec and in 2/3 engines), we should leave this API as-is, and **not** update it to support cross-tree ranges.
 
+
+# Mutability of live ranges returned from `getRangeAt()`
+
+In the [section above](#changes-to-existing-selection-apis), the `getRangeAt()` function is explained as a [re-scoping](#re-scoping) of the full selection, avoiding any contained shadow trees. The question arises: what happens if that live range is mutated via the various APIs available on [`Range`](https://developer.mozilla.org/en-US/docs/Web/API/Range):
+
+- Range.setStart()
+- Range.setEnd()
+- Range.setStartBefore()
+- Range.setStartAfter()
+- Range.setEndBefore()
+- Range.setEndAfter()
+- Range.selectNode()
+- Range.selectNodeContents()
+- Range.collapse()
+
+In each of these cases, the effect should be the same as if `setBaseAndExtend()` were called, with the provided start or end being the one provided, and the other endpoint of the range being the current value of the true range. In other words, for the `Range` APIs that only modify one endpoint of the range, the other endpoint of the actual, true range should not be affected/changed. For example, referring back to [Example Tree 1](#example-tree-1):
+
+```javascript
+let selection = window.getSelection();
+selection.setBaseAndExtent(A, 0, J, 1);
+// The true selection is now A0 (light DOM) to J1 (within nested shadow trees).
+
+let range = selection.getRangeAt(0); // [A, 0, A, 2] - re-scoped around F
+range.setStart(A, 1); // Move the start to A1
+range; // [A, 1, A, 2] - start node/offset updated, end node/offset left as-is.
+selection.getComposedRange({shadowRoots: [J]}); // [A, 1, J, 1] - end node/offset left as-is.
+
+range.setEnd(A, 2); // Move the end to A2
+range; // [A, 1, A, 2] - no apparent change
+selection.getComposedRange({shadowRoots: [J]}); // [A, 1, A, 2] - but end node has been updated.
+```
+
+A more complicated situation arises from the [requirement](https://dom.spec.whatwg.org/#:~:text=Algorithms%20that%20modify%20a%20tree) that DOM tree modifications themselves can also mutate live `Range` objects. For example, [node removal](https://dom.spec.whatwg.org/#concept-node-remove) can change the endpoints of a live range, if an endpoint of the range is close to the node being removed. The proposal here is to follow the existing logic for tree mutations, but apply the range modifications **directly to the true range** instead of to the `Range` object, which has re-scoped endpoints. In other words, if there's a live `Range` that has been re-scoped around some shadow trees, and a tree modification within one of the shadow trees takes place, the **true range** will be mutated accordingly, and the live `Range` will be updated to be equal to the rescoped-equivalent of the new true range.
+
+For example, referring back to [Example Tree 1](#example-tree-1):
+
+```javascript
+let selection = window.getSelection();
+selection.setBaseAndExtent(A, 0, J, 1);
+// The true selection is now A0 (light DOM) to J1 (within nested shadow trees).
+
+let range = selection.getRangeAt(0); // [A, 0, A, 2] - re-scoped around F
+
+// Remove node K from the tree:
+K.remove();
+range; // [A, 0, A, 2] - no visible change
+selection.getComposedRange({shadowRoots: [J]}); // [A, 0, J, 0] - updated end point
+```
+
+
+# Canonicalization
+
+When the selection is set by the user clicking and dragging the mouse across some text, the browser "canonicalizes" the selection endpoints. This means they pick from one of many possible node/offset values for the given visible caret position. For example:
+
+```html
+  <div>|<span>|<p>|Test</p></span></div>
+```
+
+If the user highlights the word "Test", the start point of the selection could be represented equally well by any of the positions marked with '|'. That means the startContainer for the range could be any of `<div>`, `<span>`, or `<p>`. All are equivalent from the user's point of view.
+
+Given that canonicalization happens when the selection is being modified, the same logic from the [Changes to existing selection APIs section](#changes-to-existing-selection-apis) can be used. Essentially, the same canonicalization can still be used, so long as the true selection endpoints are allowed to live in any shadow tree.
 
 # Web Compatibility Risk
 
