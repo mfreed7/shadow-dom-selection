@@ -2,7 +2,7 @@
 
 Author: Mason Freed
 
-Last updated: October 8, 2021
+Last updated: December 1, 2021
 
 Issue: https://github.com/WICG/webcomponents/issues/79
 
@@ -166,12 +166,13 @@ This selection might even skip over other nodes that are in the light dom (e.g. 
 
 This is a two-part proposal.
 
-## Part 1: Add `Selection.getComposedRange()`
+## Part 1: Add `Selection.getComposedRange()` and `Selection.direction`
 
 
 ```webIDL
 partial interface Selection {
   StaticRange getComposedRange(optional GetComposedRangeOptions options = {});
+  readonly attribute DOMString direction; // "forwards", "backwards", or "directionless"
 };
 
 dictionary GetComposedRangeOptions {
@@ -180,8 +181,9 @@ dictionary GetComposedRangeOptions {
 };
 ```
 
+This adds a new API, `getComposedRange()`, which can return a [`StaticRange`](https://developer.mozilla.org/en-US/docs/Web/API/StaticRange) with endpoints in **different shadow trees**. Because that will necessarily expose `Node`s inside shadow trees, including potentially `closed` shadow trees, an optional `shadowRoots` parameter enables the method to return `Node`s within the provided list of shadow roots, if necessary. If a selection endpoint is within a non-provided shadow root, the returned selection will be ["re-scoped"](#re-scoping) as if the entire host element for that shadow root was selected.
 
-This a new API, `getComposedRange()`, which can return a [`StaticRange`](https://developer.mozilla.org/en-US/docs/Web/API/StaticRange) with endpoints in **different shadow trees**. Because that will necessarily expose `Node`s inside shadow trees, including potentially `closed` shadow trees, an optional `shadowRoots` parameter enables the method to return `Node`s within the provided list of shadow roots, if necessary. If a selection endpoint is within a non-provided shadow root, the returned selection will be ["re-scoped"](#re-scoping) as if the entire host element for that shadow root was selected.
+Additionally, the `direction` attribute is exposed as a `DOMString` attribute on `Selection`. This attribute [already exists](https://w3c.github.io/selection-api/#dfn-direction) in the spec for `Selection`, but it isn't currently exposed to WebIDL. Exposing this attribute is important, because the `StaticRange` returned by `getComposedRange()` always has `startContainer` as the "left side" of the selection, and `endContainer` as the "right side" node. Therefore, when using this API, there's no way to tell which direction the selection was actually created. The (non-shadow-DOM aware) `Selection.anchorNode` and `Selection.focusNode` previously allowed this directionality to be inferred, but in this proposal, those APIs will remain shadow-DOM unaware. By exposing `Selection.direction` directly, the directionality can be extracted.
 
 ## Part 2: Modify existing `Selection` APIs accordingly
 
